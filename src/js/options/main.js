@@ -5,13 +5,21 @@ if (typeof browser === 'undefined') {
 
 // Globals
 const HTML = document.documentElement;
+const SIDEBAR = document.getElementById('sidebar');
+const TEMPLATE_SIDEBAR_SECTION = document.getElementById('template_sidebar_section');
 const OPTIONS_LIST = document.getElementById('primary_options');
 const TEMPLATE_FIELDSET = document.getElementById('template_fieldset');
 const TEMPLATE_SECTION = document.getElementById('template_section');
 const TEMPLATE_OPTION = document.getElementById('template_option');
-
 const TIMER_CONTAINER = document.getElementById('timer_container');
-let openedTime = Date.now()
+let openedTime = Date.now();
+let currentUrl;
+
+const resultsPageRegex = new RegExp('.*://.*youtube\\.com/results.*', 'i');
+const videoPageRegex =   new RegExp('.*://(www|m)\\.youtube\\.com/watch\\?v=.*', 'i');
+const homepageRegex =    new RegExp('.*://(www|m)\\.youtube\\.com/$',  'i');
+const shortsRegex =      new RegExp('.*://.*youtube\.com/shorts.*',  'i');
+const subsRegex =        new RegExp(/\/feed\/subscriptions$/, 'i');
 
 document.addEventListener("DOMContentLoaded", () => {
   browser.runtime.sendMessage({ getFieldsets: true });
@@ -26,8 +34,13 @@ browser.runtime.onMessage.addListener((data, sender) => {
 
     // Initial page load.
     if (SECTIONS) {
-      populateOptions(SECTIONS, headerSettings, settings);
-      HTML.setAttribute('loaded', true);
+      browser.tabs.query({ currentWindow: true, active: true }, tabs => {
+        if (!tabs || tabs.length === 0) return;
+        const [{ url }] = tabs;
+        currentUrl = url;
+        populateOptions(SECTIONS, headerSettings, settings);
+        HTML.setAttribute('loaded', true);
+      });
     }
 
     return true;
@@ -40,28 +53,34 @@ browser.runtime.onMessage.addListener((data, sender) => {
 
 function populateOptions(SECTIONS, headerSettings, SETTING_VALUES) {
 
-  // Clear the options list
+  // Clear the options list, and the sidebar
   OPTIONS_LIST.innerHTML = '';
+  SIDEBAR.innerHTML = '';
+  let allTags = [];
 
   // Add option nodes to the HTML.
   SECTIONS.forEach(section => {
-    const { name, options } = section;
+    const { name, tags, options } = section;
+
+    tags.split(',').forEach(tag => allTags.push(tag.trim()));
 
     // Create a new section
     const sectionNode = TEMPLATE_SECTION.cloneNode(true);
     sectionNode.id = name;
     sectionNode.classList.remove('removed');
+    sectionNode.setAttribute('tags', tags);
     const label = sectionNode.querySelector('.section_label');
     label.innerText = name;
 
     options.forEach(option => {
-      const { id, name, defaultValue, effects, display } = option;
+      const { id, name, tags, defaultValue, effects, display } = option;
       if (display === false) return;
 
       const optionNode = TEMPLATE_OPTION.cloneNode(true);
       optionNode.classList.remove('removed');
       optionNode.id = id;
       optionNode.setAttribute('name', name);
+      optionNode.setAttribute('tags', tags);
       optionNode.classList.add(id);
       const optionLabel = optionNode.querySelector('.option_label');
       optionLabel.innerText = name;
@@ -90,9 +109,21 @@ function populateOptions(SECTIONS, headerSettings, SETTING_VALUES) {
     OPTIONS_LIST.append(sectionNode);
   });
 
+  // Add sections to the sidebar
+  const uniqueTags = Array.from(new Set(allTags));
+  uniqueTags.forEach(tag => {
+    const sidebarSection = TEMPLATE_SIDEBAR_SECTION.cloneNode(true);
+    sidebarSection.removeAttribute('hidden');
+    sidebarSection.removeAttribute('id');
+    sidebarSection.setAttribute('tag', tag);
+    sidebarSection.innerText = tag;
+    sidebarSection.addEventListener('click', sidebarSectionListener);
+    SIDEBAR.append(sidebarSection);
+  });
+
   if (headerSettings) {
     Object.entries(headerSettings).forEach(([ id, value ]) => {
-      updateSetting(id, value);
+      HTML.setAttribute(id, value);
 
       const svg = document.querySelector(`div#${id} svg`);
       svg?.toggleAttribute('active', value);
@@ -103,6 +134,17 @@ function populateOptions(SECTIONS, headerSettings, SETTING_VALUES) {
         updateSetting(id, value);
       });
     });
+  }
+
+  // Pre-select sidebar option based on current window. Default to 'Basic'
+  if (resultsPageRegex.test(currentUrl)) {
+    document.querySelector('.sidebar_section[tag="Search"]').click();
+  } else if (videoPageRegex.test(currentUrl)) {
+    document.querySelector('.sidebar_section[tag="Video Player"]').click();
+  } else if (subsRegex.test(currentUrl)) {
+    document.querySelector('.sidebar_section[tag="Subscriptions"]').click();
+  } else {
+    document.querySelector('.sidebar_section[tag="Basic"]').click();
   }
 
   const searchBar = document.getElementById('search_bar');
@@ -119,6 +161,8 @@ function populateOptions(SECTIONS, headerSettings, SETTING_VALUES) {
 
 
 function updateSetting(id, value) {
+
+  recordEvent('Setting changed', { id, value });
 
   HTML.setAttribute(id, value);
 
@@ -173,6 +217,52 @@ function onSearchInput(e) {
         return;
       }
       option.classList.add('removed');
+    });
+
+    if (!optionFound) {
+      section.classList.add('removed');
+    }
+  });
+}
+
+
+function sidebarSectionListener(e) {
+  const sidebarSection = e.target;
+  const sidebarSections = Array.from(document.querySelectorAll('.sidebar_section'));
+  const selected = sidebarSection.toggleAttribute('selected');
+  const tag = sidebarSection.getAttribute('tag');
+  const sections = Array.from(document.querySelectorAll('.section_container:not(#template_section)'));
+
+  recordEvent('Section selected', { tag, selected });
+
+  // Reset
+  sections.forEach(section => {
+    section.classList.remove('removed');
+    const options = Array.from(section.querySelectorAll('div.option'));
+    options.forEach(option => option.classList.remove('removed'));
+  });
+  sidebarSections.forEach(sidebarSection => {
+    sidebarSection.removeAttribute('selected');
+  })
+
+  sidebarSection.toggleAttribute('selected', selected);
+  if (!selected) return;
+
+  sections.forEach(section => {
+    const sectionTags = section.getAttribute('tags').split(',').map(t => t.trim());
+    const sectionMatch = sectionTags.some(t => t === tag);
+    if (sectionMatch) return;
+
+    const options = Array.from(section.querySelectorAll('div.option'));
+    let optionFound = false;
+    options.forEach(option => {
+      const optionTags = option.getAttribute('tags').split(',').map(t => t.trim());
+      const optionMatch = optionTags.some(t => t === tag);
+      if (optionMatch) {
+        optionFound = true;
+      } else {
+        option.classList.add('removed');
+      }
     });
 
     if (!optionFound) {

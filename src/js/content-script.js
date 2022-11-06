@@ -17,15 +17,16 @@ const REDIRECT_URLS = {
 const resultsPageRegex = new RegExp('.*://.*youtube\.com/results.*', 'i');
 const homepageRegex =    new RegExp('.*://(www|m)\.youtube\.com/$',  'i');
 const shortsRegex =      new RegExp('.*://.*youtube\.com/shorts.*',  'i');
+const videoRegex =       new RegExp('.*://.*youtube\.com/watch\\?v=.*',  'i');
 const subsRegex =        new RegExp(/\/feed\/subscriptions$/, 'i');
 
 // Dynamic settings variables
 const cache = {};
 let url;
 let counter = 0, theaterClicked = false, hyper = false;
-let originalPlayback, originalMuted;
 let onResultsPage = resultsPageRegex.test(location.href);
 let frameRequested = false;
+let dynamicIters = 0;
 
 
 // Send a "get settings" message to the background script.
@@ -62,9 +63,15 @@ document.addEventListener("DOMContentLoaded", event => {
   requestRunDynamicSettings()
 });
 
-
+// let lastRun = Date.now();
+let isRunning = false;
 function runDynamicSettings() {
-  frameRequested = false;
+  if (isRunning) return;
+  isRunning = true;
+  dynamicIters += 1;
+
+  // console.log('runDynamicSettings', Date.now() - lastRun);
+  // lastRun = Date.now();
 
   if ('global_enable' in cache && cache['global_enable'] !== true) {
     requestRunDynamicSettings()
@@ -95,20 +102,30 @@ function runDynamicSettings() {
 
   // Subscriptions page options
   if (subsRegex.test(url)) {
-    const badges = document.querySelectorAll('ytd-badge-supported-renderer');
-    badges.forEach(badge => {
-      const badgeText = badge.innerText.trim();
+    const badgeSelector = 'ytd-badge-supported-renderer';
+    const upcomingBadgeSelector = 'ytd-thumbnail-overlay-time-status-renderer[overlay-style="UPCOMING"]';
+    const shortsBadgeSelector = 'ytd-thumbnail-overlay-time-status-renderer[overlay-style="SHORTS"]';
+    const addBadgeTextToVideo = badge => {
+      const badgeText = badge.innerText.trim().toLowerCase();
       if (badgeText) {
         const video = badge.closest('ytd-grid-video-renderer');
-        video.setAttribute('badge-text', badgeText);
+        video?.setAttribute('badge-text', badgeText);
       }
-    });
+    };
+
+    // Live / Premiere
+    const badges = document.querySelectorAll(badgeSelector);
+    badges.forEach(addBadgeTextToVideo);
+
+    // Upcoming
+    const upcomingBadges = document.querySelectorAll(upcomingBadgeSelector);
+    upcomingBadges.forEach(addBadgeTextToVideo);
 
     // Shorts
-    const shortBadges = document.querySelectorAll('ytd-thumbnail-overlay-time-status-renderer[overlay-style="SHORTS"]');
+    const shortBadges = document.querySelectorAll(shortsBadgeSelector);
     shortBadges.forEach(badge => {
       const video = badge.closest('ytd-grid-video-renderer');
-      video.setAttribute('is_sub_short', '');
+      video?.setAttribute('is_sub_short', '');
     });
   }
 
@@ -118,15 +135,17 @@ function runDynamicSettings() {
     shortResults.forEach(sr => {
       sr.setAttribute('marked_as_short', true);
       const result = sr.closest('ytd-video-renderer');
-      result.setAttribute('is_short', true);
+      result?.setAttribute('is_short', true);
     })
   }
 
-  // Click on the "dismiss" button
-  const dismissButton = document.getElementById('dismiss-button');
-  if (dismissButton && dismissButton.offsetParent) {
-    dismissButton.click();
-  }
+  // Click on "dismiss" buttons
+  const dismissButtons = document.querySelectorAll('#dismiss-button');
+  dismissButtons.forEach(dismissButton => {
+    if (dismissButton && dismissButton.offsetParent) {
+      dismissButton.click();
+    }
+  })
 
   // Disable autoplay
   if (cache['disable_autoplay'] === true) {
@@ -167,7 +186,8 @@ function runDynamicSettings() {
     });
 
     // Click on "Skip ad" button
-    const skippableAd = document.querySelectorAll('.ytp-ad-skip-button').length;
+    const skipButtons = Array.from(document.querySelectorAll('.ytp-ad-skip-button'));
+    const skippableAd = skipButtons.some(button => button.offsetParent);
     if (skippableAd) {
       document.querySelectorAll('.ytp-ad-skip-button')?.forEach(e => {
         if (e && e.offsetParent) {
@@ -177,25 +197,33 @@ function runDynamicSettings() {
     } else {
 
       // Speed through ads that can't be skipped (yet).
-      const adSelector = '.ytp-ad-player-overlay-instream-info';
-      const adElement = document.querySelectorAll(adSelector)[0];
+      let adSelector = '.ytp-ad-player-overlay-instream-info';
+      let adElement = document.querySelectorAll(adSelector)[0];
       const adActive = adElement && window.getComputedStyle(adElement).display !== 'none';
+      const video = document.getElementsByTagName("video")[0];
       if (adActive) {
         if (!hyper) {
-          originalPlayback = document.getElementsByTagName("video")[0].playbackRate;
-          originalMuted = document.getElementsByTagName("video")[0].muted;
           hyper = true;
         }
-        document.getElementsByTagName("video")[0].playbackRate = 10;
-        document.getElementsByTagName("video")[0].muted = true;
+        video.playbackRate = 10;
+        video.muted = true;
       } else {
         if (hyper) {
-          document.getElementsByTagName("video")[0].playbackRate = originalPlayback;
-          document.getElementsByTagName("video")[0].muted = originalMuted;
+          let playbackRate = 1;
+          let muted = false;
+          try {
+            const playbackRateObject = window.sessionStorage['yt-player-playback-rate'];
+            const volumeObject = window.sessionStorage['yt-player-volume'];
+            playbackRate = Number(JSON.parse(playbackRateObject).data);
+            muted = JSON.parse(JSON.parse(volumeObject).data).muted;
+          } catch (error) {
+            console.log(error);
+          }
+          video.playbackRate = playbackRate !== undefined ? playbackRate : 1;
+          video.muted = muted !== undefined ? muted : false;
           hyper = false;
         }
       }
-
     }
   }
 
@@ -203,21 +231,38 @@ function runDynamicSettings() {
   //   document.getElementsByTagName("video")[0].playbackRate = Number(cache['change_playback_speed']);
   // }
 
-  requestRunDynamicSettings()
+  // Hide all but the timestamped comments
+  if (cache['remove_non_timestamp_comments']) {
+    const timestamps = document.querySelectorAll('yt-formatted-string:not(.published-time-text).ytd-comment-renderer > a.yt-simple-endpoint[href^="/watch"]');
+    timestamps.forEach(timestamp => {
+      const comment = timestamp.closest('ytd-comment-thread-renderer');
+      comment?.setAttribute('timestamp_comment', '');
+    });
+  }
+
+  frameRequested = false;
+  isRunning = false;
+  requestRunDynamicSettings();
 }
 
 
 function handleUrlChange() {
   if (cache['global_enable'] !== true) return;
 
-  const currentUrl = location.href;
+  dynamicIters = 0;
 
-  // Mark whether or not we're on the "results" page
+  const currentUrl = location.href;
+  const onHomepage = homepageRegex.test(currentUrl);
   const onResultsPage = resultsPageRegex.test(currentUrl);
+  const onShorts = shortsRegex.test(currentUrl);
+
+  // Mark whether or not we're on the search results page
   HTML.setAttribute('on_results_page', onResultsPage);
 
-  // Redirect the homepage
-  const onHomepage = homepageRegex.test(currentUrl);
+  // Mark whether or not we're on the homepage
+  HTML.setAttribute('on_homepage', onHomepage);
+
+  // Homepage redirects
   if (onHomepage && !cache['redirect_off']) {
     if (cache['redirect_to_subs'])    location.replace(REDIRECT_URLS['redirect_to_subs']);
     if (cache['redirect_to_wl'])      location.replace(REDIRECT_URLS['redirect_to_wl']);
@@ -234,16 +279,18 @@ function handleUrlChange() {
   }
 
   // Redirect the shorts player
-  const onShorts = shortsRegex.test(currentUrl);
   if (onShorts && cache['normalize_shorts']) {
     const newUrl = currentUrl.replace('shorts', 'watch');
     location.replace(newUrl);
   }
+
+  requestRunDynamicSettings();
 }
 
 
 function requestRunDynamicSettings() {
-  if (frameRequested) return;
+  if (frameRequested || isRunning) return;
   frameRequested = true;
-  setTimeout(() => runDynamicSettings(), 50);
+  // setTimeout(() => runDynamicSettings(), 50);
+  setTimeout(() => runDynamicSettings(), Math.min(100, 50 + 10 * dynamicIters));
 }
