@@ -29,8 +29,8 @@ Have a feature request or found a bug? Feel free to create a Github issue, submi
 The following commands will set up a Firefox dev environment.
 
 ```
-$ git clone https://github.com/lawrencehook/remove-youtube-suggestions.git
+$ git clone --branch feat-home-to-custom-message-page-redirect-option https://github.com/coder0107git/remove-youtube-suggestions-exstension.git
 $ cd remove-youtube-suggestions/src
-$ npm install --global web-ext
+$ npm install web-ext
 $ web-ext run
 ```

@@ -267,6 +267,15 @@ function handleUrlChange() {
     if (cache['redirect_to_subs'])    location.replace(REDIRECT_URLS['redirect_to_subs']);
     if (cache['redirect_to_wl'])      location.replace(REDIRECT_URLS['redirect_to_wl']);
     if (cache['redirect_to_library']) location.replace(REDIRECT_URLS['redirect_to_library']);
+    if (cache['redirect_to_library']) {
+      let response = await fetch(browser.runtime.getURL("youtube-page-unavailable.html")); 
+      let text = await response.text();
+      
+      let elem = document.createElement("html");
+      elem.innerHTML = text;
+      
+      document.querySelector(":root").replaceWith(elem);
+    }
   }
 
   // Redirect the shorts player
